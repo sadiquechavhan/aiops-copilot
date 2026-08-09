@@ -25,3 +25,11 @@ runs/
 # Claude Code per-machine settings. settings.local.json is personal by convention
 # and contains absolute paths from this machine; settings.json would be shared.
 .claude/settings.local.json
+
+# Private working notes, kept on disk but out of the public repo. The build plan
+# names a specific target employer, and the engineering log and progress file are
+# personal interview preparation rather than project documentation. README.md is
+# the public account of the same work.
+BUILD_PLAN.md
+ENGINEERING_LOG.md
+PROGRESS.md
