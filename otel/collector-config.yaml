@@ -1,0 +1,93 @@
+# =============================================================================
+# OpenTelemetry Collector — Session 1
+#
+# The collector exists so the three services know about exactly one telemetry
+# address. Swapping Jaeger for Tempo, or adding Redpanda in Session 8, is a
+# change to this file alone — no service rebuild, no restart of the JVMs.
+#
+# Shape:  receivers -> processors -> exporters, wired together by `pipelines`.
+# =============================================================================
+
+receivers:
+  otlp:
+    protocols:
+      # The Java agents push here.
+      grpc:
+        endpoint: 0.0.0.0:4317
+      # Same data over HTTP. Kept so a trace can be posted with curl when the
+      # question is "is the collector broken, or is the agent not sending?".
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # MUST be first in every pipeline. Processors run in the order listed, so if
+  # this ran after `batch` the collector would already have spent the memory
+  # assembling batches before deciding it was under pressure. First position
+  # means it refuses data at the door.
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 150          # container mem_limit is 192m
+    spike_limit_mib: 40
+
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+exporters:
+  # Traces out. Note this is the generic `otlp` exporter with an instance name,
+  # not a Jaeger-specific one — the dedicated Jaeger exporter was removed from
+  # the collector, and modern Jaeger ingests OTLP natively on 4317.
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true        # plaintext inside the compose network
+
+  # Metrics out. This does NOT push to Prometheus — it opens a /metrics page
+  # that Prometheus scrapes. Traces are push end to end; metrics change
+  # direction here.
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    # Without this, service.name is folded into the `job` label and you cannot
+    # write `sum by (service_name) (...)`. Turns resource attributes into real
+    # labels. Small cardinality cost, negligible at three services.
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  # To see spans printed in `docker compose logs otel-collector`, add a
+  # `debug:` exporter here with `verbosity: detailed` and append `debug` to the
+  # traces pipeline below. Left out rather than declared-and-unused, because
+  # the collector rejects components no pipeline references.
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+
+  pipelines:
+    traces:
+      receivers:  [otlp]
+      processors: [memory_limiter, batch]
+      exporters:  [otlp/jaeger]
+
+    metrics:
+      receivers:  [otlp]
+      processors: [memory_limiter, batch]
+      exporters:  [prometheus]
+
+    # logs: added in Session 4, when drain3 needs them.
+
+  telemetry:
+    metrics:
+      level: basic
+      # The collector's own metrics — how many spans it received, dropped and
+      # exported. This is how you prove the pipeline is not silently losing
+      # data. Must bind 0.0.0.0: the default is localhost, which is unreachable
+      # from the Prometheus container.
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888

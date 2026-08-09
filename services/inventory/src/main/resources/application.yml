@@ -1,0 +1,25 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: inventory
+  lifecycle:
+    timeout-per-shutdown-phase: 10s
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/aiops}
+    username: ${DB_USER:aiops}
+    password: ${DB_PASSWORD:aiops}
+    hikari:
+      pool-name: inventory-pool
+      # Small on purpose. Ten connections is plenty for this load and few enough
+      # that Session 2's pool-exhaustion fault is actually reachable.
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 3000
+
+logging:
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%X{trace_id:-no-trace}] %logger{24} - %msg%n"

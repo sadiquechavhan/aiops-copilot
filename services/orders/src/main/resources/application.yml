@@ -1,0 +1,16 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: orders
+  lifecycle:
+    timeout-per-shutdown-phase: 10s
+
+downstream:
+  url: ${DOWNSTREAM_URL:http://localhost:8082}
+
+logging:
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%X{trace_id:-no-trace}] %logger{24} - %msg%n"

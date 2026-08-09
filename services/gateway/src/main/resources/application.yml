@@ -1,0 +1,20 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: gateway
+  lifecycle:
+    timeout-per-shutdown-phase: 10s
+
+downstream:
+  # Overridden by DOWNSTREAM_URL in Compose. The default is the localhost port
+  # you would use running the three services outside Docker.
+  url: ${DOWNSTREAM_URL:http://localhost:8081}
+
+logging:
+  # trace_id comes from the OTel agent, which populates SLF4J's MDC automatically.
+  # Costs nothing now and makes log-to-trace correlation possible in Session 4.
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%X{trace_id:-no-trace}] %logger{24} - %msg%n"

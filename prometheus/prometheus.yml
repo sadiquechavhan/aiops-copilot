@@ -1,0 +1,34 @@
+# =============================================================================
+# Prometheus scrape configuration
+#
+# Prometheus pulls. Nothing here talks to the Java services directly — they push
+# OTLP to the collector, and the collector exposes the result on :8889 for
+# Prometheus to scrape.
+# =============================================================================
+
+global:
+  # Matches OTEL_METRIC_EXPORT_INTERVAL in docker-compose.yml. If these two
+  # disagree, rate() graphs develop a staircase that looks like an incident.
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+
+  # Application and JVM metrics, forwarded by the collector from all three
+  # services. This is the one that matters for the Session 1 done condition.
+  - job_name: otel-collector-forwarded
+    static_configs:
+      - targets: ['otel-collector:8889']
+
+  # The collector's own internal metrics: spans received, refused, dropped,
+  # export failures. The pipeline's own health, as distinct from the
+  # application's.
+  - job_name: otel-collector-internal
+    static_configs:
+      - targets: ['otel-collector:8888']
+
+  # Prometheus scraping itself. Free, and it is the first thing to check when
+  # nothing else is appearing.
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']

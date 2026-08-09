@@ -1,0 +1,25 @@
+# Provisioned at startup. Datasources created this way cannot be edited in the
+# UI, which is intentional: the file is the source of truth, so a fresh
+# `docker compose up` always produces an identical Grafana.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    uid: aiops-prometheus
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s
+
+  # Jaeger as a datasource costs nothing (the plugin is built into Grafana) and
+  # means traces can be opened from Grafana rather than switching UIs. Session 5
+  # will use this to jump from an anomalous metric to the traces underneath it.
+  - name: Jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+    uid: aiops-jaeger

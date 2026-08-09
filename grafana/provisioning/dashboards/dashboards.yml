@@ -1,0 +1,15 @@
+apiVersion: 1
+
+providers:
+  - name: aiops
+    orgId: 1
+    folder: AIOps
+    type: file
+    disableDeletion: false
+    # Grafana re-reads the JSON files on this interval, so editing a dashboard
+    # file on the host takes effect without restarting the container.
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

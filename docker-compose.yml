@@ -1,0 +1,298 @@
+# =============================================================================
+# AIOps Copilot — Session 1
+#
+#   System under observation:  gateway -> orders -> inventory -> postgres
+#   Telemetry pipeline:        OTel Java agent -> OTel Collector
+#                                                  |-> Jaeger      (traces)
+#                                                  \-> Prometheus  (metrics)
+#                                                        \-> Grafana
+#
+# `restart: unless-stopped` everywhere. This was originally omitted on the theory
+# that a crashed container should stay dead and visible -- then Docker Desktop
+# stopped mid-session and the entire stack stayed down, silently, while a traffic
+# generator logged 144 connection-refused errors against it. The real failure mode
+# on a laptop is the daemon stopping, not a service crashing. Faults in Session 2
+# are injected over HTTP rather than by killing containers, so this does not hide
+# what we are trying to observe.
+# =============================================================================
+
+name: aiops
+
+# --- Reusable OTel agent configuration ---------------------------------------
+# YAML anchor. Everything here is identical for all three services except the
+# service name, which each service overrides. Defined once so the three copies
+# cannot drift apart.
+x-otel-env: &otel-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  OTEL_TRACES_EXPORTER: otlp
+  OTEL_METRICS_EXPORTER: otlp
+  # Logs stay off in Session 1. The log pipeline is Session 4's job; turning it
+  # on now would fill Jaeger's neighbour with data nothing reads.
+  OTEL_LOGS_EXPORTER: none
+  # Push metrics every 15s to match Prometheus's scrape interval. Mismatched
+  # intervals produce staircase-shaped rate() graphs that look like an incident.
+  OTEL_METRIC_EXPORT_INTERVAL: "15000"
+  # Sample everything. At this volume sampling would only lose evidence, and
+  # Session 2 needs every faulted request to be present in the trace store.
+  OTEL_TRACES_SAMPLER: always_on
+  OTEL_RESOURCE_ATTRIBUTES: deployment.environment=local
+
+x-java-opts: &java-opts >-
+  -javaagent:/otel/opentelemetry-javaagent.jar
+  -XX:MaxRAMPercentage=70.0
+
+services:
+
+  # ===========================================================================
+  # System under observation
+  # ===========================================================================
+
+  postgres:
+    image: postgres:${POSTGRES_TAG}
+    container_name: aiops-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # Postgres refuses to initialise into a non-empty directory, and a Docker
+      # volume mount point is not empty. Nesting PGDATA one level down is the
+      # standard workaround.
+      PGDATA: /var/lib/postgresql/data/pgdata
+    command:
+      - postgres
+      - -c
+      - shared_buffers=64MB
+      - -c
+      - max_connections=30
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+    mem_limit: 256m
+    restart: unless-stopped
+    networks: [aiops]
+
+  inventory:
+    build:
+      context: ./services/inventory
+    image: aiops/inventory:1.0.0
+    container_name: aiops-inventory
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: inventory
+      JAVA_TOOL_OPTIONS: *java-opts
+      # Session 2. When false the ChaosFilter is not registered at all -- the fault
+      # mechanism is absent, not merely idle. True here because this stack exists to
+      # be broken; a real deployment would default this to false.
+      CHAOS_ENABLED: "true"
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      # Read-only mount, not baked into the image: the agent is downloaded once
+      # for all three services and its version can change without a rebuild.
+      - ./otel/agent/opentelemetry-javaagent.jar:/otel/opentelemetry-javaagent.jar:ro
+    ports:
+      - "${INVENTORY_PORT}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      # Generous: two CPU cores, a JVM, and a bytecode-rewriting agent that has
+      # to transform every class as it loads.
+      start_period: 90s
+    mem_limit: 384m
+    restart: unless-stopped
+    networks: [aiops]
+
+  orders:
+    build:
+      context: ./services/orders
+    image: aiops/orders:1.0.0
+    container_name: aiops-orders
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: orders
+      JAVA_TOOL_OPTIONS: *java-opts
+      CHAOS_ENABLED: "true"
+      DOWNSTREAM_URL: http://inventory:8080
+    volumes:
+      - ./otel/agent/opentelemetry-javaagent.jar:/otel/opentelemetry-javaagent.jar:ro
+    ports:
+      - "${ORDERS_PORT}:8080"
+    depends_on:
+      inventory:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 90s
+    mem_limit: 320m
+    restart: unless-stopped
+    networks: [aiops]
+
+  gateway:
+    build:
+      context: ./services/gateway
+    image: aiops/gateway:1.0.0
+    container_name: aiops-gateway
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: gateway
+      JAVA_TOOL_OPTIONS: *java-opts
+      CHAOS_ENABLED: "true"
+      DOWNSTREAM_URL: http://orders:8080
+    volumes:
+      - ./otel/agent/opentelemetry-javaagent.jar:/otel/opentelemetry-javaagent.jar:ro
+    ports:
+      - "${GATEWAY_PORT}:8080"
+    depends_on:
+      orders:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 90s
+    mem_limit: 320m
+    restart: unless-stopped
+    networks: [aiops]
+
+  # ===========================================================================
+  # Telemetry pipeline
+  # ===========================================================================
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:${OTELCOL_TAG}
+    container_name: aiops-otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel/collector-config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "${OTLP_GRPC_PORT}:4317"    # OTLP gRPC   — what the Java agents push to
+      - "${OTLP_HTTP_PORT}:4318"    # OTLP HTTP   — curl-able, for debugging
+      - "${COLLECTOR_PROM_PORT}:8889"  # what Prometheus scrapes
+      - "${COLLECTOR_HEALTH_PORT}:13133"  # health_check extension
+    depends_on:
+      jaeger:
+        condition: service_started
+    # No healthcheck: this image has no shell and no wget. Verified from the
+    # host instead, against the health_check extension on 13133.
+    mem_limit: 192m
+    restart: unless-stopped
+    networks: [aiops]
+
+  jaeger:
+    image: jaegertracing/all-in-one:${JAEGER_TAG}
+    container_name: aiops-jaeger
+    environment:
+      # Badger (embedded key-value store on disk), not in-memory. Changed in
+      # Session 2 after in-memory storage destroyed the trace evidence for a
+      # completed 30-minute labelled run: the process restarted once and every
+      # span was gone, because "storage" was the heap of a process with a restart
+      # policy. Session 1 recorded that as a known fragility; it stopped being
+      # hypothetical the first time the trace evidence actually mattered.
+      #
+      # Still a single node and still all-in-one -- this is not the production
+      # answer, which is Cassandra or Elasticsearch. It is the smallest change
+      # that makes traces outlive the process holding them.
+      SPAN_STORAGE_TYPE: badger
+      BADGER_EPHEMERAL: "false"
+      BADGER_DIRECTORY_VALUE: /badger/data
+      BADGER_DIRECTORY_KEY: /badger/key
+      # Bounded on purpose. A monitoring system that fills the disk it monitors is
+      # a classic self-inflicted outage, and this machine is tight on space.
+      BADGER_SPAN_STORE_TTL: 72h
+    volumes:
+      - badgerdata:/badger
+    ports:
+      - "${JAEGER_UI_PORT}:16686"   # UI only. Its OTLP port stays internal —
+                                    # nothing outside the network should bypass
+                                    # the collector.
+    # Raised from 320m when switching to Badger. Badger's defaults inside this image
+    # are a 256 MB block cache plus a 64 MB memtable, which does not fit in 320 MB
+    # alongside the Go runtime -- and Jaeger v1 exposes no environment variable to
+    # shrink them. Costs ~190 MB of a ~2.6 GB total budget on a machine with ~8 GB
+    # free, which is the cheaper side of the trade against losing trace evidence.
+    mem_limit: 512m
+    restart: unless-stopped
+    networks: [aiops]
+
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_TAG}
+    container_name: aiops-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Hard caps. This machine has ~8 GB free on C: and this stack is expected
+      # to run for two weeks.
+      - --storage.tsdb.retention.time=24h
+      - --storage.tsdb.retention.size=1GB
+      # Allows `curl -XPOST localhost:9090/-/reload` instead of a restart.
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT}:9090"
+    depends_on:
+      otel-collector:
+        condition: service_started
+    mem_limit: 384m
+    restart: unless-stopped
+    networks: [aiops]
+
+  grafana:
+    image: grafana/grafana:${GRAFANA_TAG}
+    container_name: aiops-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Anonymous viewers so dashboards load without a login prompt every time.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT}:3000"
+    depends_on:
+      prometheus:
+        condition: service_started
+    mem_limit: 256m
+    restart: unless-stopped
+    networks: [aiops]
+
+networks:
+  aiops:
+    driver: bridge
+
+volumes:
+  pgdata:
+  promdata:
+  grafanadata:
+  badgerdata:
