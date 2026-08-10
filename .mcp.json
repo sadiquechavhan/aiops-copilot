@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "aiops-telemetry": {
+      "command": "py",
+      "args": ["-3.12", "-m", "aiops_mcp.server"],
+      "env": {
+        "PYTHONIOENCODING": "utf-8",
+        "AIOPS_PROMETHEUS_URL": "http://localhost:9090",
+        "AIOPS_JAEGER_URL": "http://localhost:16686"
+      }
+    }
+  }
+}
