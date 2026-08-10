@@ -224,6 +224,128 @@ scenario runner and no telemetry backend.
 
 ---
 
+## Asking the system questions — the MCP server
+
+The telemetry above is only useful if something can *interrogate* it. `aiops_mcp/`
+is an MCP server that exposes it as tools, so a model can ask "is inventory slow"
+and get an answer computed from Prometheus and Jaeger rather than guessed.
+
+**What MCP actually is**, since the acronym does a lot of hiding: JSON-RPC 2.0,
+newline-delimited over stdout, with a fixed method vocabulary — `initialize`,
+`notifications/initialized`, `tools/list`, `tools/call`, `ping`. That is the whole
+protocol at this scope. It is hand-rolled here in the standard library: **no
+dependency, no venv, no lockfile.** The official SDK would have been faster and is
+the right choice the moment a second transport is needed; it would also have
+hidden the part worth understanding.
+
+| Tool | Answers |
+|---|---|
+| `query_metrics` | latency percentiles, request rate, error ratio, DB pool |
+| `query_traces` | which service is actually spending the time |
+| `get_trace` | where one request went, as an indented span tree |
+| `telemetry_status` | are the backends up, and how far back can I see |
+
+```powershell
+# exercise it over real pipes, without a client
+py -3.12 tools\mcp_probe.py --list
+py -3.12 tools\mcp_probe.py query_metrics '{\"metric\":\"latency\",\"service\":\"orders\",\"window\":\"15m\",\"percentile\":99}'
+py -3.12 tools\mcp_probe.py --ground-truth      # replay the labelled windows
+py -3.12 tools\mcp_probe.py --cost query_traces '{\"service\":\"gateway\",\"window\":\"15m\"}'
+```
+
+`.mcp.json` registers the server at project scope, so a client started in this
+directory finds it after you approve it once.
+
+### Return shapes are designed for a context window
+
+A tool that returns everything is a tool that cannot be used twice. The property
+worth having is not "smaller" but **bounded** — the response must not grow with
+the question:
+
+| window | served | unaggregated | reduction |
+|---|---|---|---|
+| 15m | 1,172 B | 5,760 B | 5× |
+| 23h | 1,159 B (~290 tokens) | 165,720 B (~41,430 tokens) | **223×** |
+
+Flat across a 92× range of window sizes, because the point budget is fixed and
+only the bucket width changes. Traces fold the same way — spans collapse into
+per-service self-time, measured at 37× on live traffic and 49× on incident traces
+(deeper traces, more spans to fold; ~12× on idle health checks). Every figure is
+reproducible with `--cost`, which fetches the raw side **for real** rather than
+estimating it.
+
+Downsampling takes the **max** per bucket, never the mean. Handing Prometheus a
+wide `step` lets it pick one sample per step and discard the rest, so a 40-second
+spike inside a 10-minute bucket vanishes — the tool would report a clean window
+during an incident it was pointed directly at.
+
+### Two error channels, kept distinct
+
+This is the part of MCP that is easy to get backwards, and getting it wrong makes
+a model hallucinate confidently:
+
+- A **JSON-RPC error** (`-32601` method not found, `-32602` invalid params) goes
+  to the *client*. The model never sees it.
+- A **successful response carrying `isError: true`** goes to the *model*.
+
+So "Prometheus is unreachable" must be the second kind. Sent as a JSON-RPC error
+it disappears into the client, and the model — having asked and received nothing —
+invents a plausible latency number. Every failure here carries one of four kinds:
+`bad_argument`, `backend_unreachable`, `backend_error`, `timeout`.
+
+The same principle governs empty results. A window past Prometheus's 24 h
+retention is **not** empty, it is unavailable, and the tool says so explicitly —
+*"This data is gone, not empty"* — because "empty" invites the conclusion that
+nothing happened.
+
+**The `timeout` kind earned itself.** After several hours of continuous load,
+Badger reached ~400 MB and its compactions (10–32 s each, on two cores) saturated
+Jaeger's write path: the collector could not export a single batch
+(`DeadlineExceeded`) and trace search took 48 s for a window the tool allows 15 s.
+Jaeger was **up and answering** — `/api/services` returned in 86 ms — just far
+too slowly to be useful. The server reported `kind: timeout, target: jaeger` and
+`telemetry_status` returned `degraded`. It did not return an empty trace list,
+which is the failure that matters: a model told "no traces found" concludes the
+requests never happened.
+
+One rough edge, recorded rather than smoothed over: `telemetry_status` reports
+`reachable: false` in this state. Within the tool's time budget that is true, and
+the `detail` field says `TimeoutError` rather than `connection refused`, but the
+boolean itself cannot tell *saturated* from *dead* — and those need different
+responses from whoever is on call.
+
+### Self-time closes the metrics blind spot
+
+i1 and i4 both raise gateway's p95 to ~480 ms and are indistinguishable in
+metrics. `query_traces` computes each span's **self-time** — its duration minus
+the *merged* intervals of its children, merged rather than summed so concurrent
+children cannot produce a negative — and the two separate cleanly:
+
+```
+i1 (fault in inventory)  ->  inventory 96.0% of self-time
+i4 (fault in gateway)    ->  gateway   92.1% of self-time
+```
+
+The tool reports the number and stops there. Ranking services by blame is the
+correlation layer's job; doing it in two places would mean two components able to
+disagree about root cause with no way to tell which was right.
+
+### Verified against the labelled windows, not against "now"
+
+`--ground-truth` replays every incident in `ground_truth.jsonl` through the tool
+and checks the answers. Every window still inside Prometheus's 24 h retention
+answers as expected; windows that have aged past the horizon are **correctly
+refused** rather than reported as quiet, and the check counts them as expired
+rather than failed. The split between the two shifts as the labelled runs age —
+which is the point. A check that scored those refusals as failures would show a
+working system decaying purely with the passage of time.
+
+`search_logs` is deliberately **absent** until the log pipeline exists. A tool
+with no data source is worse than a missing one: the model calls it, gets nothing,
+and cannot distinguish "no matching logs" from "no logs are collected".
+
+---
+
 ## What is built
 
 | | Status |
@@ -232,7 +354,8 @@ scenario runner and no telemetry backend.
 | OTel agent → Collector → Jaeger / Prometheus / Grafana | done |
 | Chaos endpoints in all three services | done |
 | Scenario runner, ground truth, signal verification | done |
-| MCP server exposing metrics/traces/logs as tools | planned |
+| MCP server exposing metrics and traces as tools | done |
+| `search_logs` + the log pipeline | planned |
 | Anomaly detection scored against ground truth | planned |
 | Trace-based correlation and root-cause ranking | planned |
 | RAG over runbooks; incident-response agent | planned |
@@ -252,13 +375,24 @@ engineering it.
 - **These are clean-room faults.** Injected latency is a `Thread.sleep` and injected
   errors are a coin flip. Real latency arrives with GC pauses, queueing and
   saturation; real 500s arrive with partial writes and retry storms.
-- **Eight labelled incidents is not a sample.** Accuracy figures computed over this
+- **Twelve labelled incidents is not a sample.** Accuracy figures computed over this
   many events would have error bars wide enough to be meaningless, so none are
   quoted.
 - **Every fault was designed by the same person who will write the detector.** That
   is the most flattering possible evaluation setup, and it is worth saying out loud.
 - **Compose is not Kubernetes.** Service discovery here is Docker's embedded DNS.
   None of the questions that make Kubernetes hard arise at all.
+- **The MCP server has only ever been driven by its own probe and one client.**
+  The probe was written by the same person as the server, against the same reading
+  of the spec, so a shared misreading is invisible to this setup. Two older
+  protocol revisions are advertised and neither has been exercised.
+- **The slow-backend case was tested by accident, not by design.** It was not a
+  deliberate fault-injection test; the stack degraded on its own and the tool was
+  pointed at it (see below). A test that happens *to* you is weaker evidence than
+  one you can re-run on demand, and there is no harness for it yet.
+- **Token counts here are bytes divided by four.** The bytes are measured; the
+  conversion is a rule of thumb, and real tokenisation of dense JSON runs worse.
+  Treat every token figure as a floor.
 
 ---
 
@@ -268,6 +402,13 @@ engineering it.
   used in-memory storage; a single process restart destroyed the trace evidence for
   a completed 30-minute labelled run. Storage that lives in a process's heap is not
   storage.
+- **Badger will out-run two cores if you leave load running.** At 6 req/s with
+  `always_on` sampling it reached ~400 MB in a few hours, at which point level-5→6
+  compactions took 10–32 s each and starved both the write path (collector
+  exports failing with `DeadlineExceeded`) and search (48 s for a 15-minute
+  window). Nothing crashes and `docker compose ps` still says `running`. Stop the
+  traffic generator when you are not using it, or wipe the volume between runs.
+  The 72 h TTL bounds the data, but not fast enough to protect a two-core host.
 - **Large Jaeger API queries are not safely read-only.** A single request for 400
   traces with full span payloads preceded that restart. Keep verification queries
   small.

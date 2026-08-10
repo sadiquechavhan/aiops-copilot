@@ -252,7 +252,7 @@ def check_ground_truth(server, run=None):
 # Cost
 # ---------------------------------------------------------------------------
 
-def measure_cost(server, args):
+def measure_cost(server, tool, args):
     """Response size against the unaggregated alternative.
 
     Bytes are the primary unit because they are measured, not estimated. The
@@ -260,9 +260,17 @@ def measure_cost(server, args):
     tokenisation of dense JSON runs worse than that, so treat it as a floor.
 
     The comparison is against what the same question costs without the tool:
-    every raw sample Prometheus would return at native 15s resolution, which is
-    what a query_metrics(promql) passthrough tool would hand back.
+    for metrics, every raw sample Prometheus would return at native resolution;
+    for traces, the spans Jaeger actually hands back over the same window. Both
+    fetch the raw side FOR REAL rather than estimating it -- a saving computed
+    against a guessed baseline is not a measurement.
     """
+    if tool == "query_traces":
+        return _cost_traces(server, args)
+    if tool != "query_metrics":
+        raise SystemExit(f"--cost supports query_metrics and query_traces, "
+                         f"not {tool!r}")
+
     reply = server.call("query_metrics", args)
     payload, is_error = unwrap(reply)
     if is_error:
@@ -280,12 +288,75 @@ def measure_cost(server, args):
     print(json.dumps(payload, indent=2))
     print()
     print(f"  window          {duration}s, {n_series} series")
-    print(f"  served          {served:,} bytes  (~{served // 4:,} tokens)")
-    print(f"  unaggregated    {raw_bytes:,} bytes  (~{raw_bytes // 4:,} tokens), "
-          f"{raw_samples:,} samples")
-    if served:
-        print(f"  reduction       {raw_bytes / served:.0f}x")
+    _report(served, raw_bytes, f"{raw_samples:,} samples")
     return 0
+
+
+def _cost_traces(server, args):
+    """query_traces served size against Jaeger's own response for that window.
+
+    The raw side is FETCHED, not modelled, because the saving from folding is
+    entirely a function of spans per trace -- and that varies hugely between an
+    incident (deep traces) and an idle stack (single-span health checks).
+    Estimating it would produce whichever number I assumed.
+    """
+    payload, is_error = unwrap(server.call("query_traces", args))
+    if is_error:
+        print(json.dumps(payload, indent=2))
+        return 1
+    if payload.get("status") != "ok":
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    served = len(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    window = payload["window"]
+    raw, spans = _raw_jaeger(args, window)
+    print(f"  window          {window['duration_s']}s, "
+          f"{payload['returned']} traces / {spans} spans")
+    _report(served, raw, f"{spans} spans across {payload['returned']} traces")
+    if spans <= payload["returned"]:
+        # Single-span traces are health checks. Saying so matters: the headline
+        # reduction is far larger on incident traffic, and a reader who sampled
+        # an idle stack would otherwise conclude folding barely helps.
+        print("  NOTE            traces are ~1 span each (idle/health traffic); "
+              "the reduction is much larger on incident traffic")
+    return 0
+
+
+def _raw_jaeger(args, window):
+    """What Jaeger returns unfolded, for the same service and window.
+
+    Deliberately does NOT import aiops_mcp -- this file is a protocol client and
+    stays one. Importing the package for a URL would make the probe share the
+    server's configuration, so a wrong URL in the package would produce a
+    matching wrong URL here and the comparison would silently agree with itself.
+    """
+    import datetime
+    import urllib.parse
+    import urllib.request
+
+    base = os.environ.get("AIOPS_JAEGER_URL", "http://localhost:16686")
+
+    def epoch_us(text):
+        stamp = datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ")
+        return int(stamp.replace(tzinfo=datetime.timezone.utc).timestamp() * 1e6)
+
+    query = urllib.parse.urlencode({"service": args["service"],
+                                    "start": epoch_us(window["start"]),
+                                    "end": epoch_us(window["end"]),
+                                    "limit": args.get("limit", 20)})
+    with urllib.request.urlopen(f"{base}/api/traces?{query}",
+                                timeout=30) as response:
+        data = json.loads(response.read()).get("data") or []
+    raw = len(json.dumps(data, separators=(",", ":")).encode("utf-8"))
+    return raw, sum(len(t.get("spans", [])) for t in data)
+
+
+def _report(served, raw, detail):
+    print(f"  served          {served:,} bytes  (~{served // 4:,} tokens)")
+    print(f"  unaggregated    {raw:,} bytes  (~{raw // 4:,} tokens), {detail}")
+    if served:
+        print(f"  reduction       {raw / served:.0f}x")
 
 
 def main():
@@ -329,7 +400,7 @@ def main():
             raise SystemExit(f"arguments is not JSON: {exc}")
 
         if options.cost:
-            return measure_cost(server, arguments)
+            return measure_cost(server, options.tool, arguments)
 
         payload, is_error = unwrap(server.call(options.tool, arguments))
         print(json.dumps(payload, indent=2))
