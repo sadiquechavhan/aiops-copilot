@@ -21,6 +21,9 @@ MODES
     --raw          also dump every frame in both directions, verbatim
     --cost         measure the response and compare against the unaggregated
                    payload the same question would return without the tool
+    --conformance  assert the protocol behaviours no working tool call touches:
+                   which failures go to the client, which go to the model, and
+                   that a notification is not answered
     --ground-truth replay the labelled incident windows from ground_truth.jsonl
                    and check the tool's answers against them
 """
@@ -111,6 +114,116 @@ def unwrap(reply):
         # get_trace returns a pre-rendered tree, which is deliberately NOT JSON.
         # Passed through verbatim rather than reported as unparseable.
         return {"text": text}, bool(result.get("isError"))
+
+
+# ---------------------------------------------------------------------------
+# Protocol conformance
+# ---------------------------------------------------------------------------
+
+def check_conformance(server):
+    """Assert the protocol behaviours that a working tool call never exercises.
+
+    These were verified by hand at the end of Session 3 and the result was a
+    paragraph in a transcript, which is the same mistake as log 110: a claim whose
+    evidence is not in the repo. A claim about protocol conformance that cannot be
+    re-run is a claim about the past.
+
+    The two channels are the whole point, and they are easy to conflate:
+
+      * A JSON-RPC `error` object goes to the CLIENT. The model never sees it.
+        Correct for a malformed call -- unknown method, missing required argument
+        -- because the model did not make a semantic mistake, the caller did.
+
+      * A SUCCESSFUL response carrying isError: true goes to the MODEL. Correct
+        for a call that was well-formed and failed anyway -- unknown service
+        name, backend down -- because the model can read it, understand why, and
+        pick a different argument.
+
+    Getting these backwards is silent: a backend outage reported as a JSON-RPC
+    error makes the model see a tool that returned nothing at all, with no reason.
+
+    A notification is checked too, because it is the one frame that must produce
+    NO reply. A server that answers it desynchronises every subsequent id, and the
+    symptom appears later on an unrelated call.
+    """
+    checks, failures = 0, 0
+
+    def report(name, ok, detail):
+        nonlocal checks, failures
+        checks += 1
+        if not ok:
+            failures += 1
+        print(f"  {'ok    ' if ok else 'FAIL  '}{name:44s} {detail}")
+
+    def tool_error(payload):
+        """The tool-side error object, which is nested under `error`.
+
+        Not the top level. The distinction matters and cost a debugging round:
+        `{"error": {"kind": ...}}` from the tool is a *successful* JSON-RPC
+        response whose body describes a failure, and it is nothing like the
+        top-level `error` of a JSON-RPC fault. Reading `kind` from the top level
+        silently yields None and looks like the server omitting it.
+        """
+        inner = payload.get("error")
+        return inner if isinstance(inner, dict) else {}
+
+    # ping -> an empty result object. Trivial, and the one call that proves the
+    # transport works independently of any tool.
+    reply = server.send("ping")
+    report("ping -> empty result", reply.get("result") == {},
+           f"result={reply.get('result')!r}")
+
+    # Unknown method -> -32601. Client-channel: the model did not ask for this.
+    reply = server.send("tools/nonexistent")
+    code = reply.get("error", {}).get("code")
+    report("unknown method -> -32601", code == -32601, f"code={code}")
+
+    # tools/call with no name -> -32602 invalid params, NOT isError. The call
+    # itself is malformed, so there is no tool to report a failure from.
+    reply = server.send("tools/call", {"arguments": {}})
+    code = reply.get("error", {}).get("code")
+    report("tools/call without name -> -32602", code == -32602, f"code={code}")
+
+    # Unknown TOOL name -> the model channel. Well-formed call, wrong tool, and
+    # the model is the one who can fix it by picking a real name.
+    payload, is_error = unwrap(server.call("no_such_tool", {}))
+    kind = tool_error(payload).get("kind")
+    report("unknown tool -> isError + bad_argument",
+           is_error and kind == "bad_argument" and "jsonrpc_error" not in payload,
+           f"isError={is_error} kind={kind}")
+
+    # Bad argument VALUE -> also the model channel, and the error must name the
+    # field and list what is valid, or the model can only guess again.
+    payload, is_error = unwrap(server.call("query_metrics",
+                                           {"metric": "latency", "window": "banana"}))
+    err = tool_error(payload)
+    kind, field = err.get("kind"), err.get("field")
+    report("bad window -> isError + bad_argument",
+           is_error and kind == "bad_argument",
+           f"isError={is_error} kind={kind} field={field!r}")
+
+    # Unknown service -> bad_argument carrying the known values. Checked
+    # separately from the window because it is a different validator, and this is
+    # the one that tells the model which services exist.
+    payload, is_error = unwrap(server.call("query_traces", {"service": "nope"}))
+    err = tool_error(payload)
+    known = err.get("known")
+    report("unknown service -> lists known values",
+           is_error and err.get("kind") == "bad_argument" and bool(known),
+           f"known={known}")
+
+    # A notification MUST NOT be answered. Verified by id alignment rather than
+    # by waiting for silence: send the notification, then a request, and confirm
+    # the reply carries the request's own id. A stray reply to the notification
+    # would shift it.
+    server.send("notifications/initialized", notify=True)
+    expected = server.next_id + 1
+    reply = server.send("ping")
+    report("notification unanswered (id stays aligned)",
+           reply.get("id") == expected, f"expected id={expected} got={reply.get('id')}")
+
+    print(f"\n{checks - failures}/{checks} protocol check(s) passed")
+    return 1 if failures else 0
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +481,9 @@ def main():
     parser.add_argument("--cost", action="store_true", help="measure response size")
     parser.add_argument("--ground-truth", action="store_true",
                         help="replay labelled incident windows")
+    parser.add_argument("--conformance", action="store_true",
+                        help="assert the protocol behaviours a normal tool call "
+                             "never exercises: error channels, notifications")
     parser.add_argument("--run", help="restrict --ground-truth to one run_id")
     parser.add_argument("--list", action="store_true", help="tools/list only")
     options = parser.parse_args()
@@ -381,6 +497,9 @@ def main():
               f"{info.get('serverInfo', {}).get('version')} "
               f"protocol={info.get('protocolVersion')} "
               f"({(time.time() - started) * 1000:.0f}ms)\n")
+
+        if options.conformance:
+            return check_conformance(server)
 
         if options.ground_truth:
             return check_ground_truth(server, options.run)

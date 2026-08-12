@@ -319,12 +319,39 @@ responses from whoever is on call.
 i1 and i4 both raise gateway's p95 to ~480 ms and are indistinguishable in
 metrics. `query_traces` computes each span's **self-time** — its duration minus
 the *merged* intervals of its children, merged rather than summed so concurrent
-children cannot produce a negative — and the two separate cleanly:
+children cannot produce a negative — and the two separate cleanly. Recomputed
+from the committed raw traces of both labelled runs:
 
 ```
-i1 (fault in inventory)  ->  inventory 96.0% of self-time
-i4 (fault in gateway)    ->  gateway   92.1% of self-time
+                        run-20260809-201431   run-20260810-170537
+i1 (fault in inventory)   inventory 98.5%       inventory 96.2%
+i4 (fault in gateway)     gateway   93.5%       gateway   91.0%
 ```
+
+Each figure is a 15-trace sample, so it moves by a point or two between samples —
+the exact percentage is not the claim. The claim is the *separation*, and it
+reproduces across two runs recorded a day apart with no shared state. The raw
+Jaeger spans behind every number are in `runs/<run_id>/traces/`, so the table can
+be rederived rather than believed — offline, from the committed files, with no
+running stack:
+
+```bash
+py -3.12 tools/verify_traces.py
+```
+
+The files were produced by `tools/export_traces.py <run_id>`, which reads Jaeger.
+Do not re-run it for these two runs: their windows are long past the 72 h TTL and
+past the wipe below, so it would replace the evidence with nothing. It refuses to
+do that, but the reason it needs to refuse is worth stating plainly — a tool for
+preserving evidence is one careless invocation away from being a tool for
+destroying it.
+
+They are committed because they are not regenerable. Jaeger's TTL is 72 h, and
+its Badger volume gets emptied when it outgrows its memory cap (below) — the
+first two labelled runs had their trace evidence living only inside the container
+that the fix wipes. Self-time is *derived*; given the spans it can be recomputed
+by any future version of the folding code. The reverse is not true, so the input
+is what gets stored.
 
 The tool reports the number and stops there. Ranking services by blame is the
 correlation layer's job; doing it in two places would mean two components able to
@@ -339,6 +366,21 @@ refused** rather than reported as quiet, and the check counts them as expired
 rather than failed. The split between the two shifts as the labelled runs age —
 which is the point. A check that scored those refusals as failures would show a
 working system decaying purely with the passage of time.
+
+It decays in a different way instead, and the honest statement of it is this: once
+every labelled run is older than 24 h, the replay scores `0/0` and demonstrates
+nothing except that refusal works. That state is reached in a day, and it is the
+current state. Re-running the metrics-side check means recording a fresh labelled
+run — the verification is real but it is perishable, and a green result from it
+should always be read together with how old the labels are.
+
+The trace-side evidence does not perish, and that asymmetry is the reason
+`runs/<run_id>/traces/` is committed. The self-time table above is recomputable
+from those files indefinitely, with no running stack at all. Of the two things
+this session claims, the metrics tooling has to be re-demonstrated on demand and
+the trace finding is permanently auditable. Giving Prometheus's side the same
+property would mean exporting raw range-query output per labelled window, which
+is not built.
 
 `search_logs` is deliberately **absent** until the log pipeline exists. A tool
 with no data source is worse than a missing one: the model calls it, gets nothing,
@@ -409,6 +451,56 @@ engineering it.
   window). Nothing crashes and `docker compose ps` still says `running`. Stop the
   traffic generator when you are not using it, or wipe the volume between runs.
   The 72 h TTL bounds the data, but not fast enough to protect a two-core host.
+- **Left running, that degradation takes the metrics with it — all of them.** At
+  549 MB of Badger, Jaeger sat pinned at 499/512 MiB, writes slowed, the
+  collector's retry queue filled, and the collector went to 48% CPU and started
+  **dropping spans**. A collector busy enough to drop spans is also too busy to
+  serve its own `/metrics` inside Prometheus's scrape timeout, so both collector
+  scrape targets went **down** and metrics collection stopped completely —
+  `query_metrics` returning `no_samples_in_window` for a system whose services
+  were all fine. Every one of the eight containers reported `Up`, four of them
+  `healthy`, throughout. The failure travels *backwards* along the pipeline from
+  storage to collection, which is not the direction you look first.
+  Recovery, in order — Jaeger will not restart cleanly if you skip the ownership
+  step, because the container runs as uid 10001 and an emptied volume comes back
+  owned by root:
+
+  ```bash
+  docker compose stop jaeger && docker run --rm -v aiops_badgerdata:/b alpine sh -c 'rm -rf /b/* && chown -R 10001:0 /b && chmod -R 775 /b' && docker compose start jaeger && docker compose restart otel-collector
+  ```
+
+  The collector restart is not optional: it is what discards the undeliverable
+  retry queue. Without it the recovered Jaeger is immediately buried again by the
+  backlog. Export anything you still need with `tools/export_traces.py` first —
+  this deletes all trace history.
+
+  Note the `/b/*` and *not* `/b/data/*`. Badger keeps keys and values in two
+  separate directories — `BADGER_DIRECTORY_KEY: /badger/key` and
+  `BADGER_DIRECTORY_VALUE: /badger/data` — and essentially all of the size is in
+  the **key** directory. Clearing only the value directory looks like it worked
+  (`du` on `/badger/data` drops to kilobytes, Jaeger restarts, the API answers)
+  and leaves 1.4 GB of SST files in place. The symptom returns a day later as a
+  restart loop: `RestartCount` climbing, `ExitCode=0`, `OOMKilled=false`, no
+  crash in the logs, and the process never reaching `Health Check state change:
+  ready` before going round again. Measured here: 24 restarts, ~4 minutes apart,
+  while the other seven containers held 28 h of uptime.
+- **Docker's `mem_limit` percentage includes reclaimable page cache, so "512MiB /
+  512MiB" is not the emergency it looks like.** The cgroup breaks it down:
+  `anon` is real heap, `file` is memory-mapped Badger tables the kernel can drop
+  under pressure. Measured at the worst point — 353 MiB anon against 117 MiB
+  file, and `memory.events` showing `max 14268` (reclaim throttled that many
+  times) with `oom_kill 0`. That combination is the signature worth knowing:
+  **throttled but never killed**, which is why it hangs instead of dying and why
+  `ExitCode` stays 0. Settled at 130 MiB anon once Badger finished compacting.
+
+  ```bash
+  docker exec aiops-jaeger sh -c 'grep -E "^(anon|file) " /sys/fs/cgroup/memory.stat; cat /sys/fs/cgroup/memory.events'
+  ```
+
+  Badger's block cache (256 MB) and memtable (64 MB) are fixed defaults with no
+  environment variable to shrink them in Jaeger v1, so the floor here is
+  structural rather than tunable — see the `mem_limit: 512m` comment in
+  `docker-compose.yml`.
 - **Large Jaeger API queries are not safely read-only.** A single request for 400
   traces with full span payloads preceded that restart. Keep verification queries
   small.

@@ -1,0 +1,51 @@
+{
+  "run_id": "run-20260809-201431",
+  "jaeger_url": "http://localhost:16686",
+  "limit": 15,
+  "incidents": [
+    {
+      "incident_id": "run-20260809-201431/i1",
+      "file": "i1.json",
+      "root_service": "gateway",
+      "window": {
+        "start": "2026-08-09T20:17:31.860Z",
+        "end": "2026-08-09T20:21:31.860Z"
+      },
+      "traces": 15,
+      "spans": 111
+    },
+    {
+      "incident_id": "run-20260809-201431/i2",
+      "file": "i2.json",
+      "root_service": "gateway",
+      "window": {
+        "start": "2026-08-09T20:25:31.865Z",
+        "end": "2026-08-09T20:29:31.866Z"
+      },
+      "traces": 15,
+      "spans": 82
+    },
+    {
+      "incident_id": "run-20260809-201431/i3",
+      "file": "i3.json",
+      "root_service": "gateway",
+      "window": {
+        "start": "2026-08-09T20:32:31.855Z",
+        "end": "2026-08-09T20:36:31.856Z"
+      },
+      "traces": 15,
+      "spans": 105
+    },
+    {
+      "incident_id": "run-20260809-201431/i4",
+      "file": "i4.json",
+      "root_service": "gateway",
+      "window": {
+        "start": "2026-08-09T20:39:31.862Z",
+        "end": "2026-08-09T20:42:31.864Z"
+      },
+      "traces": 15,
+      "spans": 111
+    }
+  ]
+}
