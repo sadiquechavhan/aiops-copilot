@@ -378,6 +378,92 @@ def warm_up(count=12):
 
 
 # ---------------------------------------------------------------------------
+# Warm-up, part 2: settle the JIT under load before labelled time starts.
+#
+# warm_up() above pays the COLD-START cost -- the first request through a cold
+# chain took 5.4s against gateway's 5s read timeout. But cold start is not the
+# only warm-up cost. The JVM keeps interpreting bytecode until a method is hot
+# enough for C2 to compile it, and at 6 req/s reaching that point takes far
+# longer than the dozen sequential requests warm_up() sends. Session 2 measured
+# gateway p95 at ~490ms during this JIT phase against ~202ms once settled -- a
+# 2.4x inflation of anything measured too early.
+#
+# The old T=0 was set the instant steady load began, so the baseline window
+# (T+15..T+165) sat squarely inside the JIT decay, and the "normal" that every
+# signal check -- and the Session 4 detector -- learns from was ~2.4x too high.
+# That is the bug this fixes: it is the S2 debt PROGRESS.md calls "First debt".
+#
+# The fix MEASURES instead of assuming. Poll gateway p95 under real load until
+# it stops falling, then start labelled time, and RECORD how long that took. A
+# fixed "exclude the first 120s" constant was the rejected alternative: 120s is
+# a number that happened to be true on one machine on one day, and this box also
+# runs AOSP builds, so what "settled" costs in wall-clock is not constant.
+# ---------------------------------------------------------------------------
+
+def settle_under_load(max_wait, poll_every=15.0, tolerance=0.15, stable_needed=2):
+    """Wait until gateway p95 stops falling under load, or max_wait elapses.
+
+    Returns a dict describing what happened. Never raises, never fails the run:
+    a machine that cannot settle inside max_wait is a finding to record, not a
+    reason to abort -- the run is still valid, its baseline just starts later.
+
+    The signal is gateway p95 over its own 2m rate window, sampled every
+    poll_every seconds. poll_every is the scrape interval because polling faster
+    only re-reads the same Prometheus sample. "Settled" is stable_needed
+    consecutive readings that did not fall by more than `tolerance` (relative)
+    from the previous one -- i.e. the JIT decay has flattened. An absolute
+    latency ceiling was rejected: it would bake in the machine-specific number
+    this is trying to stop trusting. Stability is a property of the shape.
+
+    A plateau or a small rise counts as settled (the fall has ended); that is
+    the intent. The decay is monotonic in practice, and stable_needed=2 guards
+    against a single flat sample mid-decay being mistaken for the end of it.
+    """
+    query = Q_P95.format(svc="gateway")
+    started = time.perf_counter()
+    readings = []                                   # [(elapsed_s, p95_ms), ...]
+    stable = 0
+    prev = None
+
+    print(f"\nsettle: waiting for gateway p95 to flatten under load "
+          f"(<= {max_wait:.0f}s, poll {poll_every:.0f}s, tol {tolerance:.0%})")
+
+    while time.perf_counter() - started < max_wait:
+        time.sleep(poll_every)
+        p95 = prom_query(query)                     # p95 in seconds, None if empty/NaN
+        elapsed = time.perf_counter() - started
+        if p95 is None:
+            # The 2m rate window has not filled yet, or histogram_quantile is
+            # still NaN over sparse buckets. Not a reading -- keep waiting.
+            print(f"  [{elapsed:5.0f}s] p95 n/a (rate window still filling)")
+            continue
+        readings.append((round(elapsed, 1), round(p95 * 1000, 1)))
+        if prev is not None and prev > 0:
+            drop = (prev - p95) / prev              # positive => still falling
+            stable = stable + 1 if drop <= tolerance else 0
+            print(f"  [{elapsed:5.0f}s] p95 {p95 * 1000:6.1f}ms  "
+                  f"drop {drop:+.0%}  stable {stable}/{stable_needed}")
+        else:
+            print(f"  [{elapsed:5.0f}s] p95 {p95 * 1000:6.1f}ms  (first reading)")
+        prev = p95
+        if stable >= stable_needed:
+            settled_ms = round(p95 * 1000, 1)
+            print(f"  settled: gateway p95 {settled_ms}ms after {elapsed:.0f}s")
+            return {"settled": True, "settle_s": round(elapsed, 1),
+                    "settled_p95_ms": settled_ms, "readings": readings,
+                    "max_wait_s": max_wait, "poll_every_s": poll_every,
+                    "tolerance": tolerance, "stable_needed": stable_needed}
+
+    last_ms = readings[-1][1] if readings else None
+    print(f"  NOT settled within {max_wait:.0f}s (last p95 {last_ms}ms) -- "
+          f"starting labelled time anyway; recorded in run_meta.settle")
+    return {"settled": False, "settle_s": round(time.perf_counter() - started, 1),
+            "settled_p95_ms": last_ms, "readings": readings,
+            "max_wait_s": max_wait, "poll_every_s": poll_every,
+            "tolerance": tolerance, "stable_needed": stable_needed}
+
+
+# ---------------------------------------------------------------------------
 # Recovery
 # ---------------------------------------------------------------------------
 
@@ -635,6 +721,10 @@ def main():
                              "shape in ~3 minutes, for debugging the runner itself.")
     parser.add_argument("--rate", type=float, default=6.0, help="target req/s")
     parser.add_argument("--workers", type=int, default=4, help="load generator threads")
+    parser.add_argument("--warmup-max", type=float, default=180.0,
+                        help="cap in seconds on the settle-under-load wait before "
+                             "T=0. Full runs use it as given; --fast runs cap it at "
+                             "20s so a debug run stays short.")
     parser.add_argument("--skip-annotations", action="store_true",
                         help="do not POST Grafana annotations")
     parser.add_argument("--skip-verify", action="store_true",
@@ -670,17 +760,36 @@ def main():
     if baseline is None:
         return 3
 
+    # Traffic starts BEFORE T=0 now, because the JIT has to settle under real
+    # load before labelled time begins. So its --duration must cover the settle
+    # wait (up to warmup_max) plus the whole labelled run plus a verify margin.
+    # The subprocess is killed in the finally block regardless, so oversizing is
+    # free; undersizing would let load stop mid-run.
+    effective_warmup_max = (args.warmup_max if full_fidelity
+                            else min(20.0, args.warmup_max))
     traffic_log = open(run_dir / "traffic.log", "w", encoding="utf-8")
     traffic = subprocess.Popen(
         [sys.executable, str(TOOLS / "traffic_gen.py"),
          "--rate", str(args.rate), "--workers", str(args.workers),
-         "--duration", str(int(total + 30)), "--report-every", "15"],
+         "--duration", str(int(effective_warmup_max + total + 60)),
+         "--report-every", "15"],
         stdout=traffic_log, stderr=subprocess.STDOUT, cwd=str(ROOT))
+
+    # Settle the JIT under that load before T=0. This is what makes the baseline
+    # window clean -- see settle_under_load's docstring and PROGRESS "First debt".
+    settle = {"settled": None, "settle_s": 0.0, "settled_p95_ms": None,
+              "readings": [], "max_wait_s": effective_warmup_max}
+    if traffic.poll() is not None:
+        print("  !! traffic generator exited before settling could start")
+    else:
+        settle = settle_under_load(effective_warmup_max)
 
     incidents = []
     run_started_epoch = time.time()
     t_zero = time.perf_counter()
-    print(f"\nT=0 at {utc_iso(run_started_epoch)} — labelled time starts\n")
+    print(f"\nT=0 at {utc_iso(run_started_epoch)} — labelled time starts "
+          f"(JIT {'settled' if settle['settled'] else 'NOT settled'} in "
+          f"{settle['settle_s']:.0f}s under load)\n")
 
     try:
         for phase in SCENARIO:
@@ -762,6 +871,7 @@ def main():
         "rate": args.rate,
         "workers": args.workers,
         "warmup": baseline,
+        "settle": settle,
         "warmup_excluded_before": utc_iso(run_started_epoch),
         "baseline_window": {"start": utc_iso(baseline_window[0]),
                             "end": utc_iso(baseline_window[1])},

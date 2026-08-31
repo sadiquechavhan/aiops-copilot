@@ -75,6 +75,7 @@ from . import DEFAULT_TRACES, MAX_TRACES, SERVER_NAME, SERVER_VERSION, SERVICES
 from .metrics import METRICS, PERCENTILES, query_metrics
 from .status import telemetry_status
 from .traces import get_trace, query_traces
+from .correlate import correlate_incident
 from .util import BadArgument, ToolError
 
 # The revision this server was written against, plus older ones it can still
@@ -237,6 +238,50 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {},
                         "additionalProperties": False},
     },
+    {
+        "name": "correlate_incident",
+        "description": (
+            "Given an anomaly window from detection (start, end, signal, family), "
+            "pull traces from that window and rank candidate services by root-cause "
+            "likelihood. Returns ranked candidates with confidence scores. "
+            "Latency faults use self-time; error faults use 5xx rate + missing "
+            "child spans; saturation faults return 'insufficient trace evidence'. "
+            "Reads committed trace exports by default (durable, offline); pass "
+            "use_live=true for live Jaeger queries (S7 agent)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {
+                    "type": "string",
+                    "description": "Run ID from ground_truth.jsonl (e.g., run-20260831-174136).",
+                },
+                "incident_id": {
+                    "type": "string",
+                    "description": "Full incident ID (e.g., run-20260831-174136/i1).",
+                },
+                "anomaly_window": {
+                    "type": "object",
+                    "description": "Anomaly window from detector output.",
+                    "properties": {
+                        "start": {"type": "number", "description": "Window start (epoch seconds)."},
+                        "end": {"type": "number", "description": "Window end (epoch seconds)."},
+                        "signal": {"type": "string", "description": "Signal name (e.g., latency:inventory)."},
+                        "family": {"type": "string", "enum": ["latency", "errors", "saturation", "iforest"], "description": "Signal family."},
+                    },
+                    "required": ["start", "end", "signal", "family"],
+                    "additionalProperties": False,
+                },
+                "use_live": {
+                    "type": "boolean",
+                    "description": "If true, query live Jaeger/Prometheus. Default false (reads committed exports).",
+                    "default": False,
+                },
+            },
+            "required": ["run_id", "incident_id", "anomaly_window"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -276,6 +321,14 @@ def call_tool(name, arguments):
 
     if name == "telemetry_status":
         return telemetry_status()
+
+    if name == "correlate_incident":
+        return correlate_incident(
+            run_id=arguments.get("run_id"),
+            incident_id=arguments.get("incident_id"),
+            anomaly_window=arguments.get("anomaly_window"),
+            use_live=bool(arguments.get("use_live", False)),
+        )
 
     # Distinct from METHOD_NOT_FOUND: the method (tools/call) exists and was
     # well-formed, so this is a tool-level failure the model should see and
