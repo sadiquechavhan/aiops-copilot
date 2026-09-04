@@ -76,6 +76,7 @@ from .metrics import METRICS, PERCENTILES, query_metrics
 from .status import telemetry_status
 from .traces import get_trace, query_traces
 from .correlate import correlate_incident
+from .rag import search_runbooks
 from .util import BadArgument, ToolError
 
 # The revision this server was written against, plus older ones it can still
@@ -282,6 +283,36 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "search_runbooks",
+        "description": (
+            "Search operational runbooks for remediation guidance. Returns "
+            "relevant chunks with source path and heading for citation. "
+            "Use when you need to know how to diagnose or remediate a specific "
+            "fault type (latency, error_rate, pool_exhaust) or understand "
+            "system topology. Returns up to k chunks (default 3) with similarity "
+            "scores. If no relevant runbook found (top score < 0.3), returns "
+            "a 'no_match' status with top candidates for transparency."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural language question about fault diagnosis or remediation.",
+                },
+                "k": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "Number of chunks to return. Default 3.",
+                    "default": 3,
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -328,6 +359,12 @@ def call_tool(name, arguments):
             incident_id=arguments.get("incident_id"),
             anomaly_window=arguments.get("anomaly_window"),
             use_live=bool(arguments.get("use_live", False)),
+        )
+
+    if name == "search_runbooks":
+        return search_runbooks(
+            query=arguments.get("query"),
+            k=arguments.get("k", 3),
         )
 
     # Distinct from METHOD_NOT_FOUND: the method (tools/call) exists and was
