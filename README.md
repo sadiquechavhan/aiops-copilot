@@ -388,6 +388,87 @@ and cannot distinguish "no matching logs" from "no logs are collected".
 
 ---
 
+
+
+---
+
+## Copilot Agent (Session 7)
+
+The copilot agent turns a raw alert into a grounded incident summary by calling the MCP server's tools in sequence.
+
+```bash
+# Known incident (inventory latency, i1)
+python -c "from aiops_mcp.agent import run_agent_from_ground_truth; import json; result = run_agent_from_ground_truth('run-20260809-201431', 'run-20260809-201431/i1'); print(json.dumps(result.__dict__, indent=2, default=str))"
+
+# Unknown incident (pool exhaustion, i3 — runbooks don't cover saturation)
+python -c "from aiops_mcp.agent import run_agent_from_ground_truth; import json; result = run_agent_from_ground_truth('run-20260809-201431', 'run-20260809-201431/i3'); print(json.dumps(result.__dict__, indent=2, default=str))"
+```
+
+### What the agent does
+
+Given an alert (anomaly window from the detector), the agent:
+
+1. **Queries metrics** for the anomaly window — gets pre-aggregated percentiles + downsampled series
+2. **Queries traces** for the affected service — gets per-service self-time aggregates + compact trace rows
+3. **Gets a detailed trace** — indented span tree with self-time at each level
+4. **Correlates the incident** — ranks candidate services by root-cause likelihood with confidence scores
+5. **Searches runbooks** — retrieves remediation guidance with source_path + heading citations
+
+### Output format
+
+```json
+{
+  "summary": "Alert: latency:inventory anomaly detected; correlation identifies inventory as likely cause (latency family); runbook remediation available; confidence 87%",
+  "evidence": {
+    "metrics": {"percentiles": {"p50": 0.412, "p95": 0.689, "p99": 0.891}, ...},
+    "traces": {"aggregates": {"inventory": 96.2, "gateway": 2.1, "orders": 1.7}, ...},
+    "logs": []
+  },
+  "likely_cause": "inventory service — latency fault",
+  "recommended_action": "curl -X DELETE http://inventory:8080/chaos",
+  "confidence": 0.87,
+  "citations": [
+    {"source_path": "runbooks/latency-inventory.md", "heading": "Remediation", "score": 0.92}
+  ],
+  "raw_tool_calls": [...]
+}
+```
+
+### Confidence calibration
+
+Three signals combined via weighted harmonic mean:
+- **Detection confidence** (weight 0.3): z-score peak_z / 10 (capped at 1.0)
+- **Correlation confidence** (weight 0.4): from `correlate_incident` top_confidence (already 0-1, calibrated in S5)
+- **Retrieval confidence** (weight 0.3): `search_runbooks` top score (0 if no_match < 0.3)
+
+If retrieval is `no_match` (runbooks don't cover this incident), overall confidence is **capped at 0.4** — the agent explicitly says "I don't know" rather than hallucinating a remediation.
+
+### The interview answer: unknown incidents
+
+When tested on **i3 (pool exhaustion)** — a fault type the runbooks don't cover — the agent returns:
+
+```json
+{
+  "likely_cause": "unknown (runbooks do not cover pool_exhaust:inventory)",
+  "recommended_action": "runbooks do not cover this incident type — escalate to on-call",
+  "confidence": 0.40,
+  "citations": [{"source_path": "runbooks/saturation-diagnosis.md", "heading": "...", "score": 0.28}, ...]
+}
+```
+
+This explicit "runbooks do not cover this" with confidence capped at 0.4 is the S7 done condition. The failure mode *is* the interview answer: the system knows when it doesn't know.
+
+### Architecture
+
+The agent is a single-turn loop (multi-turn deferred to S8/S9). It starts the MCP server as a subprocess, performs the JSON-RPC handshake, calls the five tools deterministically, and synthesizes the result. Every tool call is recorded in `raw_tool_calls` for audit trail.
+
+**Debt carried forward:**
+- Multi-turn loop (S8)
+- Cross-encoder reranking for retrieval
+- Log pipeline (`search_logs`) — S4 debt
+- `telemetry_status` cannot distinguish saturated from dead — S3 debt
+
+
 ## What is built
 
 | | Status |
@@ -397,6 +478,7 @@ and cannot distinguish "no matching logs" from "no logs are collected".
 | Chaos endpoints in all three services | done |
 | Scenario runner, ground truth, signal verification | done |
 | MCP server exposing metrics and traces as tools | done |
+| **Copilot agent (single-turn, grounded summaries)** | **done (S7)** |
 | `search_logs` + the log pipeline | planned |
 | Anomaly detection scored against ground truth | planned |
 | Trace-based correlation and root-cause ranking | planned |
