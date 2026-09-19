@@ -27,9 +27,8 @@ x-otel-env: &otel-env
   OTEL_EXPORTER_OTLP_PROTOCOL: grpc
   OTEL_TRACES_EXPORTER: otlp
   OTEL_METRICS_EXPORTER: otlp
-  # Logs stay off in Session 1. The log pipeline is Session 4's job; turning it
-  # on now would fill Jaeger's neighbour with data nothing reads.
-  OTEL_LOGS_EXPORTER: none
+  # Logs now ON (Session 8): OTel Collector forwards logs to Redpanda via kafkaexporter
+  OTEL_LOGS_EXPORTER: otlp
   # Push metrics every 15s to match Prometheus's scrape interval. Mismatched
   # intervals produce staircase-shaped rate() graphs that look like an incident.
   OTEL_METRIC_EXPORT_INTERVAL: "15000"
@@ -197,6 +196,8 @@ services:
     depends_on:
       jaeger:
         condition: service_started
+      redpanda:
+        condition: service_started
     # No healthcheck: this image has no shell and no wget. Verified from the
     # host instead, against the health_check extension on 13133.
     mem_limit: 192m
@@ -284,6 +285,32 @@ services:
       prometheus:
         condition: service_started
     mem_limit: 256m
+    restart: unless-stopped
+    networks: [aiops]
+
+  # ===========================================================================
+  # Streaming backbone (Session 8)
+  # ===========================================================================
+
+  redpanda:
+    image: redpandadata/redpanda:latest
+    container_name: aiops-redpanda
+    # Use Redpanda-specific environment variables for proper advertised listeners
+    environment:
+      - REDPANDA_OVERPROVISIONED=1
+      - REDPANDA_SMP=1
+      - REDPANDA_MEMORY=512M
+      - REDPANDA_RESERVE_MEMORY=0M
+      - REDPANDA_NODE_ID=0
+      - REDPANDA_KAFKA_ADDR=PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
+      - REDPANDA_ADVERTISE_KAFKA_ADDR=PLAINTEXT://redpanda:9092,OUTSIDE://localhost:19092
+      # Disable pandaproxy and schema registry to avoid port conflicts
+      - REDPANDA_PANDAPROXY_ADDR=
+      - REDPANDA_SCHEMA_REGISTRY_ADDR=
+    ports:
+      - "9092:9092"      # Internal Kafka API (for OTel Collector)
+      - "${REDPANDA_PORT}:19092"  # External Kafka API (for host tools)
+    mem_limit: 512m
     restart: unless-stopped
     networks: [aiops]
 

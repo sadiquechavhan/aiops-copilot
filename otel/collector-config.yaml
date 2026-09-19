@@ -53,6 +53,32 @@ exporters:
     resource_to_telemetry_conversion:
       enabled: true
 
+  # Metrics to Redpanda (Session 8 streaming) — kafkaexporter pushes JSON
+  # to the aiops.metrics topic. This is in ADDITION to Prometheus, not a
+  # replacement — Prometheus remains the query backend for MCP tools.
+  kafka/redpanda:
+    brokers: ["redpanda:9092"]
+    metrics:
+      encoding: "otlp_json"
+      topic: "aiops.metrics"
+    resolve_canonical_bootstrap_servers_only: true
+    protocol_version: "2.0.0"
+    metadata:
+      full: true
+      refresh_interval: 10m0s
+      retry:
+        backoff: 250ms
+        max: 3
+
+  # Logs to Redpanda (Session 8 streaming) — same exporter, different topic
+  kafka/redpanda_logs:
+    brokers: ["redpanda:9092"]
+    logs:
+      encoding: "otlp_proto"
+      topic: "aiops.logs"
+    resolve_canonical_bootstrap_servers_only: true
+    protocol_version: "2.0.0"
+
   # To see spans printed in `docker compose logs otel-collector`, add a
   # `debug:` exporter here with `verbosity: detailed` and append `debug` to the
   # traces pipeline below. Left out rather than declared-and-unused, because
@@ -74,9 +100,13 @@ service:
     metrics:
       receivers:  [otlp]
       processors: [memory_limiter, batch]
-      exporters:  [prometheus]
+      exporters:  [prometheus, kafka/redpanda]
 
-    # logs: added in Session 4, when drain3 needs them.
+    # logs: deferred - OTel Collector kafkaexporter logs encoding issues
+    # logs:
+    #   receivers:  [otlp]
+    #   processors: [memory_limiter, batch]
+    #   exporters:  [kafka/redpanda_logs]
 
   telemetry:
     metrics:

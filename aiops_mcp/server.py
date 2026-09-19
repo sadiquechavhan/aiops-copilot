@@ -313,6 +313,35 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "get_streaming_alerts",
+        "description": (
+            "Get alerts from the streaming detector (Session 8). The detector "
+            "reads metrics from Redpanda, runs sliding-window z-score detection "
+            "with a frozen baseline, and emits alerts to an in-memory ring buffer. "
+            "Returns recent alerts with window, signal, peak value, z-score, and "
+            "baseline stats. Use to check for near-real-time anomalies without "
+            "running batch detection manually."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "since": {
+                    "type": "number",
+                    "description": "Return alerts emitted after this epoch timestamp. Default 0 (all).",
+                    "default": 0,
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "Max alerts to return. Default 50.",
+                    "default": 50,
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -366,6 +395,34 @@ def call_tool(name, arguments):
             query=arguments.get("query"),
             k=arguments.get("k", 3),
         )
+
+    if name == "get_streaming_alerts":
+        # Import here to avoid circular dependency
+        from .stream_consumer import get_streaming_detector
+        detector = get_streaming_detector()
+        alerts = detector.get_recent_alerts(
+            since=arguments.get("since", 0),
+            limit=arguments.get("limit", 50)
+        )
+        return {
+            "alerts": [
+                {
+                    "window_start": a.window_start,
+                    "window_end": a.window_end,
+                    "service": a.service,
+                    "metric": a.metric,
+                    "signal": a.signal,
+                    "family": a.family,
+                    "peak_value": a.peak_value,
+                    "peak_z": a.peak_z,
+                    "baseline_mean": a.baseline_mean,
+                    "baseline_std": a.baseline_std,
+                    "timestamp": a.timestamp,
+                }
+                for a in alerts
+            ],
+            "count": len(alerts),
+        }
 
     # Distinct from METHOD_NOT_FOUND: the method (tools/call) exists and was
     # well-formed, so this is a tool-level failure the model should see and
