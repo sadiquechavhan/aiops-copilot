@@ -469,6 +469,89 @@ The agent is a single-turn loop (multi-turn deferred to S8/S9). It starts the MC
 - `telemetry_status` cannot distinguish saturated from dead — S3 debt
 
 
+## Closed-Loop Automation (Session 9)
+
+The system now closes the loop: **alert → detect → diagnose → remediate → verify**, with a complete audit trail.
+
+### Whitelisted remediation actions
+
+Only three actions can execute — the whitelist is the blast-radius control:
+
+| Action | Description |
+|---|---|
+| `disable_chaos(service)` | DELETE `/chaos` — releases injected faults (latency, error-rate, pool-exhaust) |
+| `restart_container(service)` | `docker compose restart <service>` — heavier action for wedged processes |
+| `scale_replicas(service, n)` | Placeholder for K8s (`kubectl scale deployment`) — returns `not_implemented` in Compose |
+
+### Approval gate (mandatory)
+
+Two modes, same audit record:
+- **human** — prints proposed action, waits for "yes" on stdin (default for demo)
+- **auto** — policy-based (e.g., `disable_chaos_known_faults`)
+
+Both write the same `approved_by` field showing exactly who/what authorized it.
+
+### Recovery verification
+
+After execution, re-queries the **exact signal that triggered the alert** (`errors:orders`, `latency:inventory`, `pool:used`):
+- Latency: recovered if within 20% of baseline
+- Error rate: recovered if near zero (empty series = zero errors, handled explicitly)
+- Pool: recovered if within 20% of baseline
+
+### Audit log
+
+Every attempt writes one JSON line to `runs/<run_id>/remediation_log.jsonl`:
+
+```json
+{
+  "timestamp": "2026-09-19T21:49:26.708017Z",
+  "run_id": "run-test-closed-loop",
+  "incident_id": "run-test-closed-loop/i2",
+  "action": "disable_chaos",
+  "args": {"service": "orders"},
+  "approved_by": "auto:disable_chaos_known_faults",
+  "status": "verified",
+  "pre_metrics": {"latest": 0.0, "note": "zero errors"},
+  "post_metrics": {"latest": 0.0, "note": "zero errors"},
+  "verification": {
+    "signal": "errors:orders",
+    "baseline": 0.0,
+    "current": 0.0,
+    "recovered": true,
+    "reason": "error_rate near zero"
+  }
+}
+```
+
+### MCP tools added
+
+- `suggest_remediation(signal, candidate_service)` — returns whitelisted action with reasoning (does NOT execute)
+- `execute_remediation(run_id, incident_id, action, args, anomaly_signal, approval_mode, approval_policy, baseline_metrics)` — full execute → verify flow
+- `get_remediation_log(run_id)` — retrieves audit trail
+
+### Agent integration
+
+The agent now:
+1. Runs `query_metrics` → `query_traces` → `correlate_incident` → `search_runbooks`
+2. Calls `suggest_remediation(signal, top_candidate)` — gets whitelisted action
+3. (Optionally) executes remediation if approval given
+4. Returns `AgentResult` with `remediation: {suggested, executed, verified}`
+
+### Verified on live stack
+
+| Test | Result |
+|---|---|
+| disable_chaos clears injected fault | ✅ PASS |
+| Snapshot captures pre/post metrics | ✅ PASS |
+| Full flow with auto-approval → verified | ✅ PASS |
+| Audit log complete with verification | ✅ PASS |
+
+**What this is not:**
+- Production remediation with blast-radius control — the whitelist is the only control, and it only covers chaos faults
+- Kubernetes-native — `scale_replicas` is a placeholder; Compose cannot scale individual services
+- Multi-step remediation — S9 scope is single-action; sequencing deferred
+
+
 ## What is built
 
 | | Status |
@@ -478,11 +561,15 @@ The agent is a single-turn loop (multi-turn deferred to S8/S9). It starts the MC
 | Chaos endpoints in all three services | done |
 | Scenario runner, ground truth, signal verification | done |
 | MCP server exposing metrics and traces as tools | done |
-| **Copilot agent (single-turn, grounded summaries)** | **done (S7)** |
+| Copilot agent (single-turn, grounded summaries) | done (S7) |
+| Streaming inference (Redpanda + sliding-window z-score) | done (S8) |
+| **Closed-loop automation (whitelist + approval + verify + audit)** | **done (S9)** |
 | `search_logs` + the log pipeline | planned |
-| Anomaly detection scored against ground truth | planned |
-| Trace-based correlation and root-cause ranking | planned |
-| RAG over runbooks; incident-response agent | planned |
+| Anomaly detection scored against ground truth | done (S4) |
+| Trace-based correlation and root-cause ranking | done (S5) |
+| RAG over runbooks; incident-response agent | done (S6/S7) |
+
+---
 
 ---
 

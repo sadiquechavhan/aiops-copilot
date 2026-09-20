@@ -1,0 +1,41 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|##########| 103/103 [00:00<00:00, 1412.93it/s]
+Traceback (most recent call last):
+  File "C:\Users\sadiq\Downloads\New_Project\tools\verify_rag.py", line 129, in <module>
+    sys.exit(run_verification())
+             ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sadiq\Downloads\New_Project\tools\verify_rag.py", line 74, in run_verification
+    rag = RunbookRAG()
+          ^^^^^^^^^^^^
+  File "C:\Users\sadiq\Downloads\New_Project\aiops_mcp\rag.py", line 302, in __init__
+    self.embedder = RunbookEmbedder()
+                    ^^^^^^^^^^^^^^^^^
+  File "C:\Users\sadiq\Downloads\New_Project\aiops_mcp\rag.py", line 208, in __init__
+    self.model = SentenceTransformer(model_name)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sadiq\AppData\Local\Programs\Python\Python312\Lib\site-packages\sentence_transformers\util\decorators.py", line 46, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sadiq\AppData\Local\Programs\Python\Python312\Lib\site-packages\sentence_transformers\sentence_transformer\model.py", line 194, in __init__
+    super().__init__(
+  File "C:\Users\sadiq\AppData\Local\Programs\Python\Python312\Lib\site-packages\sentence_transformers\base\model.py", line 236, in __init__
+    modules, self.module_kwargs = self._load_modules(
+                                  ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sadiq\AppData\Local\Programs\Python\Python312\Lib\site-packages\sentence_transformers\base\model.py", line 1081, in _load_modules
+    return self._load_config_modules(model_name_or_path, **load_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sadiq\AppData\Local\Programs\Python\Python312\Lib\site-packages\sentence_transformers\base\model.py", line 1298, in _load_config_modules
+    module = module_class.load(
+             ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sadiq\AppData\Local\Programs\Python\Python312\Lib\site-packages\sentence_transformers\base\modules\transformer.py", line 2631, in load
+    return cls(model_name_or_path=model_name_or_path, **init_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sadiq\AppData\Local\Programs\Python\Python312\Lib\site-packages\sentence_transformers\util\decorators.py", line 92, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sadiq\AppData\Local\Programs\Python\Python312\Lib\site-packages\sentence_transformers\base\modules\transformer.py", line 869, in __init__
+    self.processor = AutoProcessor.from_pretrained(
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sadiq\AppData\Local\Programs\Python\Python312\Lib\site-packages\transformers\models\auto\processing_auto.py", line 347, in from_pretrained
+    raise ValueError(
+ValueError: Unrecognized processing class in sentence-transformers/all-MiniLM-L6-v2. Can't instantiate a processor, a tokenizer, an image processor, a video processor or a feature extractor for this model. Make sure the repository contains the files of at least one of those processing classes.

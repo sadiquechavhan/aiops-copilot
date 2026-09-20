@@ -342,6 +342,113 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "suggest_remediation",
+        "description": (
+            "Suggest a whitelisted remediation action for a detected anomaly. "
+            "Returns the recommended action (disable_chaos, restart_container, scale_replicas) "
+            "with arguments and reasoning. Does NOT execute — use execute_remediation for that. "
+            "Whitelist is fixed: only these three actions are permitted."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "signal": {
+                    "type": "string",
+                    "description": "Anomaly signal (e.g., latency:inventory, errors:orders, pool:used).",
+                },
+                "candidate_service": {
+                    "type": "string",
+                    "enum": ["gateway", "orders", "inventory"],
+                    "description": "Service identified as the likely root cause.",
+                },
+            },
+            "required": ["signal", "candidate_service"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "execute_remediation",
+        "description": (
+            "Execute a whitelisted remediation action behind an approval gate, then "
+            "re-check metrics to verify recovery. Actions: disable_chaos (DELETE /chaos), "
+            "restart_container (docker compose restart), scale_replicas (placeholder for K8s). "
+            "Approval modes: human (prompts for yes/no), auto (policy-based). "
+            "Writes an audit record to runs/<run_id>/remediation_log.jsonl with pre/post "
+            "metrics and verification result. Returns the remediation record."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {
+                    "type": "string",
+                    "description": "Run ID from ground_truth.jsonl (e.g., run-20260831-174136).",
+                },
+                "incident_id": {
+                    "type": "string",
+                    "description": "Full incident ID (e.g., run-20260831-174136/i1).",
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["disable_chaos", "restart_container", "scale_replicas"],
+                    "description": "Whitelisted remediation action to execute.",
+                },
+                "args": {
+                    "type": "object",
+                    "description": "Arguments for the action (e.g., {\"service\": \"orders\"}).",
+                    "properties": {
+                        "service": {"type": "string", "enum": ["gateway", "orders", "inventory"]},
+                        "replicas": {"type": "integer", "minimum": 1, "maximum": 10}
+                    },
+                    "additionalProperties": False,
+                },
+                "anomaly_signal": {
+                    "type": "string",
+                    "description": "Signal that triggered the alert (e.g., latency:inventory). Used for pre/post metric comparison.",
+                },
+                "approval_mode": {
+                    "type": "string",
+                    "enum": ["human", "auto"],
+                    "description": "Approval gate mode. Default 'human'.",
+                    "default": "human",
+                },
+                "approval_policy": {
+                    "type": "string",
+                    "description": "Policy name for auto mode (e.g., 'disable_chaos_known_faults').",
+                    "default": "",
+                },
+                "baseline_metrics": {
+                    "type": "object",
+                    "description": "Optional baseline metrics for recovery verification. If omitted, uses pre-metrics as baseline.",
+                    "properties": {
+                        "latest": {"type": "number"},
+                        "p95": {"type": "number"}
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["run_id", "incident_id", "action", "args", "anomaly_signal"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_remediation_log",
+        "description": (
+            "Get the remediation audit log for a run. Returns all remediation attempts "
+            "with timestamps, actions, approval status, pre/post metrics, and verification results."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {
+                    "type": "string",
+                    "description": "Run ID from ground_truth.jsonl (e.g., run-20260831-174136).",
+                },
+            },
+            "required": ["run_id"],
+            "additionalProperties": False,
+        },
+    },
 ]
 
 
@@ -423,6 +530,30 @@ def call_tool(name, arguments):
             ],
             "count": len(alerts),
         }
+
+    if name == "suggest_remediation":
+        from .remediation import suggest_remediation
+        return suggest_remediation(
+            signal=arguments.get("signal"),
+            candidate_service=arguments.get("candidate_service"),
+        )
+
+    if name == "execute_remediation":
+        from .remediation import execute_remediation
+        return execute_remediation(
+            run_id=arguments.get("run_id"),
+            incident_id=arguments.get("incident_id"),
+            action=arguments.get("action"),
+            args=arguments.get("args"),
+            anomaly_signal=arguments.get("anomaly_signal"),
+            approval_mode=arguments.get("approval_mode", "human"),
+            approval_policy=arguments.get("approval_policy", ""),
+            baseline_metrics=arguments.get("baseline_metrics"),
+        )
+
+    if name == "get_remediation_log":
+        from .remediation import get_remediation_log
+        return get_remediation_log(run_id=arguments.get("run_id"))
 
     # Distinct from METHOD_NOT_FOUND: the method (tools/call) exists and was
     # well-formed, so this is a tool-level failure the model should see and

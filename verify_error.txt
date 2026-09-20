@@ -1,0 +1,12 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|##########| 103/103 [00:00<00:00, 2437.82it/s]
+C:\Users\sadiq\Downloads\New_Project\aiops_mcp\rag.py:209: FutureWarning: The `get_sentence_embedding_dimension` method has been renamed to `get_embedding_dimension`.
+  self.dimension = self.model.get_sentence_embedding_dimension()
+Traceback (most recent call last):
+  File "C:\Users\sadiq\Downloads\New_Project\tools\verify_rag.py", line 120, in <module>
+    sys.exit(run_verification())
+             ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sadiq\Downloads\New_Project\tools\verify_rag.py", line 104, in run_verification
+    "expected_heading": test["expected_heading_contains"]
+                        ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyError: 'expected_heading_contains'

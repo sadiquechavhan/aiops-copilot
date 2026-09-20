@@ -1,0 +1,2 @@
+# Test terminal
+print("hello")

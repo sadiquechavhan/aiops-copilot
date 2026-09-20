@@ -1,0 +1,6 @@
+{
+  "run_id": "run-20260821-212322",
+  "jaeger_url": "http://localhost:16686",
+  "limit": 15,
+  "incidents": []
+}

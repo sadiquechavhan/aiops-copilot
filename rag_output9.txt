@@ -1,0 +1,13 @@
+Traceback (most recent call last):
+  File "C:\Users\sadiq\Downloads\New_Project\tools\verify_rag.py", line 129, in <module>
+    sys.exit(run_verification())
+             ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sadiq\Downloads\New_Project\tools\verify_rag.py", line 74, in run_verification
+    rag = RunbookRAG()
+          ^^^^^^^^^^^^
+  File "C:\Users\sadiq\Downloads\New_Project\aiops_mcp\rag.py", line 302, in __init__
+    self.embedder = RunbookEmbedder()
+                    ^^^^^^^^^^^^^^^^^
+  File "C:\Users\sadiq\Downloads\New_Project\aiops_mcp\rag.py", line 207, in __init__
+    raise ImportError("sentence-transformers not installed. Run: pip install sentence-transformers")
+ImportError: sentence-transformers not installed. Run: pip install sentence-transformers

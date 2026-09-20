@@ -1,0 +1,38 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|##########| 103/103 [00:00<00:00, 2288.35it/s]
+c:\Users/sadiq/Downloads/New_Project\aiops_mcp\rag.py:209: FutureWarning: The `get_sentence_embedding_dimension` method has been renamed to `get_embedding_dimension`.
+  self.dimension = self.model.get_sentence_embedding_dimension()
+Building index (force rebuild)...
+Indexed 93 chunks
+
+Test 1: How do I diagnose pool exhaustion in inventory?
+  CORRECT: runbooks/pool-exhaust-inventory.md - Fault Type (score: 0.848)
+Test 2: What is the difference between inventory latency and gateway latency incidents?
+  WRONG: got runbooks/latency-gateway.md - Related (score: 0.825)
+  Expected source: latency-propagation.md
+Test 3: How do I identify the error origin using missing child spans?
+  WRONG: got runbooks/error-rate-orders.md - Related (score: 0.864)
+  Expected source: missing-child-spans.md
+Test 4: What are the chaos endpoints for the gateway service?
+  WRONG: got runbooks/latency-gateway.md - Fault Type (score: 0.805)
+  Expected source: service-topology.md
+Test 5: How do I remediate an error rate fault in orders service?
+  CORRECT: runbooks/error-rate-orders.md - Fault Type (score: 0.858)
+Test 6: Why are traces ordinary during pool exhaustion?
+  WRONG: got runbooks/pool-exhaust-inventory.md - Related (score: 0.796)
+  Expected source: saturation-diagnosis.md
+Test 7: What is the self-time attribution for inventory latency fault i1?
+  WRONG: got runbooks/latency-gateway.md - Related (score: 0.849)
+  Expected source: trace-self-time-analysis.md
+Test 8: What is the service topology of the system?
+  CORRECT: runbooks/service-topology.md - Service Details (score: 0.696)
+Test 9: How does error propagation work from orders to gateway?
+  WRONG: got runbooks/latency-gateway.md - Root Cause (score: 0.745)
+  Expected source: error-propagation.md
+Test 10: How do I diagnose latency injection in gateway?
+  CORRECT: runbooks/latency-gateway.md - Fault Type (score: 0.858)
+
+============================================================
+RETRIEVAL ACCURACY: 4/10 = 40.0%
+============================================================
+SOME TESTS FAILED

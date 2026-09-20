@@ -68,6 +68,7 @@ class AgentResult:
     confidence: float
     citations: list  # list of {"source_path": ..., "heading": ..., "score": ...}
     raw_tool_calls: list  # audit trail
+    remediation: dict = None  # S9: closed-loop remediation info
 
 
 class CopilotAgent:
@@ -115,6 +116,21 @@ TOOLS AVAILABLE (call via MCP server):
    - If top score < 0.3: returns status="no_match" with top_candidates
    - YOU MUST RESPECT no_match — do not hallucinate remediation
 
+6. suggest_remediation(signal, candidate_service)
+   - Use AFTER search_runbooks to get a whitelisted action
+   - Returns: {action, args, reasoning} — does NOT execute
+   - Whitelist: disable_chaos, restart_container, scale_replicas
+
+7. execute_remediation(run_id, incident_id, action, args, anomaly_signal, approval_mode, approval_policy, baseline_metrics)
+   - Use to EXECUTE a remediation behind an approval gate
+   - approval_mode: "human" (prompts) or "auto" (policy-based)
+   - Re-checks metrics and verifies recovery
+   - Writes audit log to runs/<run_id>/remediation_log.jsonl
+   - Returns remediation record with pre/post metrics and verification
+
+8. get_remediation_log(run_id)
+   - Use to review all remediation attempts for a run
+
 YOUR OUTPUT FORMAT (JSON):
 {
   "summary": "One-sentence incident summary",
@@ -128,7 +144,12 @@ YOUR OUTPUT FORMAT (JSON):
   "confidence": 0.XX,      // 0.0-1.0, calibrated
   "citations": [           // from search_runbooks results
     {"source_path": "...", "heading": "...", "score": 0.XX}
-  ]
+  ],
+  "remediation": {         // NEW in S9: closed-loop remediation
+    "suggested": {"action": "...", "args": {...}, "reasoning": "..."},
+    "executed": {...},     // remediation record if executed
+    "verified": false      // whether recovery was verified
+  }
 }
 
 CONFIDENCE CALIBRATION RULES:
@@ -145,6 +166,9 @@ CRITICAL RULES:
 - Cite every runbook claim with source_path + heading
 - Distinguish "runbook says X" from "I don't know"
 - If uncertain, lower confidence rather than guess
+- REMEDIATION: Only suggest whitelisted actions. Only execute with approval.
+- If runbooks don't cover it, suggest_remediation still returns a default (disable_chaos)
+  but confidence is capped and agent says "runbooks do not cover this"
 """
 
     def __init__(self, mcp_server_path: str = None):
@@ -372,7 +396,15 @@ CRITICAL RULES:
             retrieval_score = runbook_chunks[0]["score"] if runbook_chunks else 0.0
             
             # ============================================================
-            # STEP 5: Synthesize the incident summary
+            # STEP 5: Suggest whitelisted remediation (S9)
+            # ============================================================
+            remediation_suggestion = self._call_tool("suggest_remediation", {
+                "signal": signal,
+                "candidate_service": top_candidate
+            })
+            
+            # ============================================================
+            # STEP 6: Synthesize the incident summary
             # ============================================================
             
             # Build evidence summary
@@ -408,6 +440,13 @@ CRITICAL RULES:
             summary = self._build_summary(signal, top_candidate, family, 
                                         retrieval_status, confidence)
             
+            # Build remediation info
+            remediation_info = {
+                "suggested": remediation_suggestion,
+                "executed": None,
+                "verified": False
+            }
+            
             return AgentResult(
                 summary=summary,
                 evidence=evidence,
@@ -415,7 +454,8 @@ CRITICAL RULES:
                 recommended_action=recommended_action,
                 confidence=confidence,
                 citations=citations,
-                raw_tool_calls=self.raw_tool_calls
+                raw_tool_calls=self.raw_tool_calls,
+                remediation=remediation_info
             )
             
         finally:
