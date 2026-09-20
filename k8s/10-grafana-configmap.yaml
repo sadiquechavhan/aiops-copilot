@@ -1,0 +1,223 @@
+# =============================================================================
+# Grafana ConfigMap — provisioned datasources and dashboards
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: aiops
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        url: http://prometheus:9090
+        access: proxy
+        isDefault: true
+        editable: false
+      - name: Jaeger
+        type: jaeger
+        url: http://jaeger:16686
+        access: proxy
+        editable: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: aiops
+data:
+  aiops-overview.json: |
+    {
+      "annotations": {
+        "list": [
+          {
+            "builtIn": 1,
+            "datasource": "-- Grafana --",
+            "enable": true,
+            "hide": true,
+            "iconColor": "rgba(0, 211, 255, 1)",
+            "name": "Annotations & Alerts",
+            "type": "dashboard"
+          },
+          {
+            "datasource": "Prometheus",
+            "enable": true,
+            "expr": "up == 0",
+            "iconColor": "red",
+            "name": "Service Down",
+            "type": "dashboard"
+          }
+        ]
+      },
+      "editable": true,
+      "gnetId": null,
+      "graphTooltip": 0,
+      "id": 1,
+      "links": [],
+      "panels": [
+        {
+          "datasource": "Prometheus",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "red", "value": 80}
+                ]
+              },
+              "unit": "percent"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "id": 1,
+          "options": {
+            "orientation": "auto",
+            "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""},
+            "showThresholdLabels": false,
+            "showThresholdMarkers": true
+          },
+          "pluginVersion": "8.0.0",
+          "targets": [
+            {
+              "expr": "sum(rate(http_server_requests_seconds_count{job=\"otel-collector\", route!~\"(/health|/chaos).*"\"}[2m])) by (service_name)",
+              "legendFormat": "{{service_name}} req/s",
+              "refId": "A"
+            }
+          ],
+          "title": "Request Rate by Service",
+          "type": "timeseries"
+        },
+        {
+          "datasource": "Prometheus",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "orange", "value": 500},
+                  {"color": "red", "value": 1000}
+                ]
+              },
+              "unit": "ms"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "id": 2,
+          "options": {
+            "orientation": "auto",
+            "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""},
+            "showThresholdLabels": false,
+            "showThresholdMarkers": true
+          },
+          "pluginVersion": "8.0.0",
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{job=\"otel-collector\", route!~\"(/health|/chaos).*"\"}[2m])) by (service_name, le))",
+              "legendFormat": "{{service_name}} p95",
+              "refId": "A"
+            }
+          ],
+          "title": "Latency p95 by Service",
+          "type": "timeseries"
+        },
+        {
+          "datasource": "Prometheus",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "red", "value": 1}
+                ]
+              },
+              "unit": "req/s"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+          "id": 3,
+          "options": {
+            "orientation": "auto",
+            "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""},
+            "showThresholdLabels": false,
+            "showThresholdMarkers": true
+          },
+          "pluginVersion": "8.0.0",
+          "targets": [
+            {
+              "expr": "sum(rate(http_server_requests_seconds_count{job=\"otel-collector\", route!~\"(/health|/chaos).*"\", status=~\"5..\"}[2m])) by (service_name)",
+              "legendFormat": "{{service_name}} 5xx/s",
+              "refId": "A"
+            }
+          ],
+          "title": "Error Rate (5xx) by Service",
+          "type": "timeseries"
+        },
+        {
+          "datasource": "Prometheus",
+          "fieldConfig": {
+            "defaults": {
+              "color": {"mode": "thresholds"},
+              "mappings": [],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"color": "green", "value": null},
+                  {"color": "orange", "value": 8},
+                  {"color": "red", "value": 9}
+                ]
+              },
+              "unit": "connections"
+            },
+            "overrides": []
+          },
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+          "id": 4,
+          "options": {
+            "orientation": "auto",
+            "reduceOptions": {"values": false, "calcs": ["lastNotNull"], "fields": ""},
+            "showThresholdLabels": false,
+            "showThresholdMarkers": true
+          },
+          "pluginVersion": "8.0.0",
+          "targets": [
+            {
+              "expr": "sum(db_client_connections_used{job=\"otel-collector\"}) by (service_name)",
+              "legendFormat": "{{service_name}} used",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(db_client_connections_idle{job=\"otel-collector\"}) by (service_name)",
+              "legendFormat": "{{service_name}} idle",
+              "refId": "B"
+            }
+          ],
+          "title": "DB Connection Pool (HikariCP)",
+          "type": "timeseries"
+        }
+      ],
+      "refresh": "10s",
+      "schemaVersion": 27,
+      "style": "dark",
+      "tags": ["aiops"],
+      "templating": {"list": []},
+      "time": {"from": "now-15m", "to": "now"},
+      "timepicker": {},
+      "timezone": "",
+      "title": "AIOps Overview",
+      "uid": "aiops-overview",
+      "version": 1
+    }

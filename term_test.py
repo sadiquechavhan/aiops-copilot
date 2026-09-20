@@ -1,2 +1,0 @@
-# Test terminal
-print("hello")

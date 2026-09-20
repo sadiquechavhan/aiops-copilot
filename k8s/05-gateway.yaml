@@ -1,0 +1,109 @@
+# =============================================================================
+# Gateway service — Deployment with NodePort for external access
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: aiops
+spec:
+  type: NodePort
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30080
+      name: http
+    - port: 4317
+      targetPort: 4317
+      name: otlp-grpc
+  selector:
+    app: gateway
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: aiops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      containers:
+        - name: gateway
+          image: aiops/gateway:1.0.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector:4317"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRICS_EXPORTER
+              value: "otlp"
+            - name: OTEL_LOGS_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "15000"
+            - name: OTEL_TRACES_SAMPLER
+              value: "always_on"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "deployment.environment=local"
+            - name: OTEL_SERVICE_NAME
+              value: "gateway"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/otel/opentelemetry-javaagent.jar -XX:MaxRAMPercentage=70.0"
+            - name: CHAOS_ENABLED
+              value: "true"
+            - name: DOWNSTREAM_URL
+              value: "http://orders:8080"
+          ports:
+            - containerPort: 8080
+              name: http
+          volumeMounts:
+            - name: otel-agent
+              mountPath: /otel
+              readOnly: true
+          resources:
+            limits:
+              memory: "320Mi"
+            requests:
+              memory: "192Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 90
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+      volumes:
+        - name: otel-agent
+          emptyDir: {}
+      initContainers:
+        - name: fetch-otel-agent
+          image: curlimages/curl:8.7.1
+          command:
+            - sh
+            - -c
+            - |
+              curl -L -o /otel/opentelemetry-javaagent.jar \
+                "https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/v2.30.0/opentelemetry-javaagent.jar"
+              chmod 644 /otel/opentelemetry-javaagent.jar
+          volumeMounts:
+            - name: otel-agent
+              mountPath: /otel

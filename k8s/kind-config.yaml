@@ -1,0 +1,38 @@
+# =============================================================================
+# Kind cluster for AIOps Copilot — Session 10
+#
+# Single control-plane node, hostPort mappings mirror docker-compose ports.
+# This is the "I've run this on K8s" checkbox — docker-compose remains primary.
+# =============================================================================
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: aiops
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.30.0
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "aiops.io/role=control-plane"
+    extraPortMappings:
+      # Host ports for ingress access (mirrors Compose host ports)
+      - containerPort: 30080
+        hostPort: 8080     # gateway
+      - containerPort: 30081
+        hostPort: 8081     # orders
+      - containerPort: 30082
+        hostPort: 8082     # inventory
+      - containerPort: 30432
+        hostPort: 16686    # jaeger UI
+      - containerPort: 30900
+        hostPort: 9090     # prometheus
+      - containerPort: 30300
+        hostPort: 3000     # grafana
+      - containerPort: 30092
+        hostPort: 19092    # redpanda external
+      - containerPort: 30417
+        hostPort: 4317     # otel collector grpc
+      - containerPort: 30418
+        hostPort: 4318     # otel collector http

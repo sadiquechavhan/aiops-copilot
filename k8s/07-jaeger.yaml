@@ -1,0 +1,101 @@
+# =============================================================================
+# Jaeger — StatefulSet with Badger persistent storage (72h TTL)
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger
+  namespace: aiops
+spec:
+  ports:
+    - port: 4317
+      targetPort: 4317
+      name: otlp-grpc
+    - port: 16686
+      targetPort: 16686
+      name: ui
+  selector:
+    app: jaeger
+  clusterIP: None
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-ui
+  namespace: aiops
+spec:
+  type: NodePort
+  ports:
+    - port: 16686
+      targetPort: 16686
+      nodePort: 30432
+      name: ui
+  selector:
+    app: jaeger
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: jaeger
+  namespace: aiops
+spec:
+  serviceName: jaeger
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jaeger
+  template:
+    metadata:
+      labels:
+        app: jaeger
+    spec:
+      initContainers:
+        # Fix Badger volume permissions (Jaeger runs as uid 10001)
+        - name: fix-permissions
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /badger/data /badger/key
+              chown -R 10001:0 /badger
+              chmod -R 775 /badger
+          volumeMounts:
+            - name: badgerdata
+              mountPath: /badger
+      containers:
+        - name: jaeger
+          image: jaegertracing/all-in-one:1.76.0
+          env:
+            - name: SPAN_STORAGE_TYPE
+              value: "badger"
+            - name: BADGER_EPHEMERAL
+              value: "false"
+            - name: BADGER_DIRECTORY_VALUE
+              value: "/badger/data"
+            - name: BADGER_DIRECTORY_KEY
+              value: "/badger/key"
+            - name: BADGER_SPAN_STORE_TTL
+              value: "72h"
+          ports:
+            - containerPort: 4317
+              name: otlp-grpc
+            - containerPort: 16686
+              name: ui
+          volumeMounts:
+            - name: badgerdata
+              mountPath: /badger
+          resources:
+            limits:
+              memory: "512Mi"
+            requests:
+              memory: "256Mi"
+  volumeClaimTemplates:
+    - metadata:
+        name: badgerdata
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+        storageClassName: standard

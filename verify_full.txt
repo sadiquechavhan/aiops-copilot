@@ -1,5 +1,0 @@
-Building index (force rebuild)...
-Indexed 93 chunks
-
-Test 1: How do I diagnose pool exhaustion in inventory?
-  CORRECT: runbooks/pool-exhaust-inventory.md - Fault Type (score: 0.848)

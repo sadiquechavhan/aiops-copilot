@@ -1,0 +1,118 @@
+# =============================================================================
+# Inventory service — Deployment with chaos enabled
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: inventory
+  namespace: aiops
+spec:
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+    - port: 4317
+      targetPort: 4317
+      name: otlp-grpc
+  selector:
+    app: inventory
+  clusterIP: None  # Headless for direct pod access if needed
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory
+  namespace: aiops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: inventory
+  template:
+    metadata:
+      labels:
+        app: inventory
+      annotations:
+        # Trigger rollout when config changes
+        checksum/config: "{{ .Values.otelConfigChecksum }}"
+    spec:
+      containers:
+        - name: inventory
+          image: aiops/inventory:1.0.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector:4317"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_TRACES_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRICS_EXPORTER
+              value: "otlp"
+            - name: OTEL_LOGS_EXPORTER
+              value: "otlp"
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "15000"
+            - name: OTEL_TRACES_SAMPLER
+              value: "always_on"
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: "deployment.environment=local"
+            - name: OTEL_SERVICE_NAME
+              value: "inventory"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-javaagent:/otel/opentelemetry-javaagent.jar -XX:MaxRAMPercentage=70.0"
+            - name: CHAOS_ENABLED
+              value: "true"
+            - name: DB_URL
+              value: "jdbc:postgresql://postgres:5432/aiops"
+            - name: DB_USER
+              value: "aiops"
+            - name: DB_PASSWORD
+              value: "aiops"
+          ports:
+            - containerPort: 8080
+              name: http
+          volumeMounts:
+            - name: otel-agent
+              mountPath: /otel
+              readOnly: true
+          resources:
+            limits:
+              memory: "384Mi"
+            requests:
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 90
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+      volumes:
+        - name: otel-agent
+          emptyDir: {}
+      initContainers:
+        - name: fetch-otel-agent
+          image: curlimages/curl:8.7.1
+          command:
+            - sh
+            - -c
+            - |
+              curl -L -o /otel/opentelemetry-javaagent.jar \
+                "https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/v2.30.0/opentelemetry-javaagent.jar"
+              chmod 644 /otel/opentelemetry-javaagent.jar
+          volumeMounts:
+            - name: otel-agent
+              mountPath: /otel
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command: ['sh', '-c', 'until nc -z postgres:5432; do sleep 2; done']

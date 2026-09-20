@@ -1,0 +1,95 @@
+# =============================================================================
+# Redpanda — Single-node Kafka-compatible broker (StatefulSet)
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: redpanda
+  namespace: aiops
+spec:
+  ports:
+    - port: 9092
+      targetPort: 9092
+      name: kafka-internal
+    - port: 19092
+      targetPort: 19092
+      name: kafka-external
+  selector:
+    app: redpanda
+  clusterIP: None
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redpanda-external
+  namespace: aiops
+spec:
+  type: NodePort
+  ports:
+    - port: 19092
+      targetPort: 19092
+      nodePort: 30092
+      name: kafka-external
+  selector:
+    app: redpanda
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redpanda
+  namespace: aiops
+spec:
+  serviceName: redpanda
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redpanda
+  template:
+    metadata:
+      labels:
+        app: redpanda
+    spec:
+      containers:
+        - name: redpanda
+          image: redpandadata/redpanda:latest
+          env:
+            - name: REDPANDA_OVERPROVISIONED
+              value: "1"
+            - name: REDPANDA_SMP
+              value: "1"
+            - name: REDPANDA_MEMORY
+              value: "512M"
+            - name: REDPANDA_RESERVE_MEMORY
+              value: "0M"
+            - name: REDPANDA_NODE_ID
+              value: "0"
+            - name: REDPANDA_KAFKA_ADDR
+              value: "PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092"
+            - name: REDPANDA_ADVERTISE_KAFKA_ADDR
+              value: "PLAINTEXT://redpanda:9092,OUTSIDE://localhost:19092"
+            - name: REDPANDA_PANDAPROXY_ADDR
+              value: ""
+            - name: REDPANDA_SCHEMA_REGISTRY_ADDR
+              value: ""
+          ports:
+            - containerPort: 9092
+              name: kafka-internal
+            - containerPort: 19092
+              name: kafka-external
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/redpanda/data
+          resources:
+            limits:
+              memory: "512Mi"
+            requests:
+              memory: "256Mi"
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+        storageClassName: standard
